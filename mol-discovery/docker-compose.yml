@@ -1,0 +1,3 @@
+# Docker removed per request - use local dev
+# Install DBs: brew install postgresql redis neo4j
+# Run: make dev

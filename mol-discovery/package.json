@@ -1,0 +1,19 @@
+{
+  "name": "mol-discovery",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "make run",
+    "build": "make build",
+    "test": "make test",
+    "lint": "make lint"
+  },
+  "devDependencies": {
+    "husky": "^8.0.3"
+  }
+}
+

@@ -1,0 +1,41 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+    - name: Install deps
+      run: poetry install
+    - name: Unit tests
+      run: poetry run pytest backend/tests/ -v --cov=backend/app
+    - name: E2E scenario
+      run: poetry run pytest backend/tests/e2e/ -v --cov=backend/app
+    - name: Performance
+      run: poetry run pytest backend/tests/performance/ -v
+    
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    - name: Install
+      run: cd frontend && npm ci
+    - name: Unit tests
+      run: cd frontend && npm test -- --coverage
+    
+  integration:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+    - run: echo "All tests passed!"
+

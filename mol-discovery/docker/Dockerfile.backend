@@ -1,0 +1,2 @@
+# Docker removed - local dev only
+# poetry install && uvicorn
