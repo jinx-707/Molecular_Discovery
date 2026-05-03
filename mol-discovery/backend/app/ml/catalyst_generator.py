@@ -1,45 +1,149 @@
+"""
+CatalystDiffusionGenerator — demo mode.
+Returns reaction-specific novel catalyst candidates without
+requiring any deep-learning framework.
+"""
 import random
-from typing import List
-from .base import Generator, GenerationInput
+from typing import List, Dict, Optional
 
-# Known good catalysts
-KNOWN_CATALYSTS = [
-    "TiO2", 
-    "ZrO2", 
-    "Ga2O3", 
-    "Al2O3", 
-    "Zeolite-HZSM5",
-    "[Pt]/CeO2"
+
+# ---------------------------------------------------------------------------
+# Candidate template libraries
+# ---------------------------------------------------------------------------
+
+_ETHANOL_JET_TEMPLATES = [
+    {
+        "name": "ZSM-5 with Ga substitution (Si/Ga=25)",
+        "description": "Gallium-modified ZSM-5 for enhanced oligomerization",
+        "type": "zeolite",
+        "rationale": "Ga increases Lewis acidity for C-C coupling",
+    },
+    {
+        "name": "Mesoporous SAPO-34 with Ni clusters (5 wt%)",
+        "description": "Nickel-loaded SAPO-34 with hierarchical porosity",
+        "type": "silicoaluminophosphate",
+        "rationale": "Mesopores improve diffusion of jet-range products",
+    },
+    {
+        "name": "Phosphotungstic acid on HY zeolite (30 wt%)",
+        "description": "Heteropoly acid supported on HY",
+        "type": "composite",
+        "rationale": "Strong Brønsted acidity for dehydration",
+    },
+    {
+        "name": "H-ZSM-5 with hierarchical porosity (meso/micro=0.3)",
+        "description": "Dual-porosity ZSM-5 with controlled mesopores",
+        "type": "zeolite",
+        "rationale": "Reduced diffusion limitations",
+    },
+    {
+        "name": "Beta zeolite with Ti incorporation (Si/Ti=50)",
+        "description": "Titanium-substituted Beta zeolite",
+        "type": "zeolite",
+        "rationale": "Ti enhances epoxidation pathways",
+    },
+    {
+        "name": "Y-zeolite with Cu-ZnOx clusters",
+        "description": "Bimetallic clusters in Y-zeolite supercages",
+        "type": "metal-zeolite",
+        "rationale": "Synergistic metal-acid catalysis",
+    },
+    {
+        "name": "Silicalite-1 with embedded Pt nanoparticles (2 nm)",
+        "description": "Platinum nanoparticles in pure silica framework",
+        "type": "metal-zeolite",
+        "rationale": "Hydrogenation function for jet fuel",
+    },
+    {
+        "name": "MOF-808 with sulfated zirconia nodes",
+        "description": "Metal-organic framework with acidic nodes",
+        "type": "MOF",
+        "rationale": "High surface area tunable acidity",
+    },
 ]
 
-ELEMENT_SUBS = {
-    'Ti': ['Zr', 'Hf'],
-    'Zr': ['Ti', 'Hf'],
-    'Ga': ['Al', 'In'],
-    'Al': ['Ga', 'B'],
-    'Pt': ['Pd', 'Rh']
-}
+_CO2_METHANOL_TEMPLATES = [
+    {
+        "name": "Cu/ZnO/Al2O3 with Zr promoter",
+        "description": "Zirconia-promoted industrial methanol catalyst",
+        "type": "mixed_oxide",
+        "rationale": "Zr stabilises Cu dispersion under CO2 atmosphere",
+    },
+    {
+        "name": "In2O3/ZrO2",
+        "description": "Indium oxide on zirconia support",
+        "type": "oxide",
+        "rationale": "High CO2-to-methanol selectivity via formate pathway",
+    },
+    {
+        "name": "Pd/ZnO",
+        "description": "Palladium on zinc oxide",
+        "type": "metal_oxide",
+        "rationale": "PdZn alloy active phase for methanol synthesis",
+    },
+    {
+        "name": "Cu@UiO-66",
+        "description": "Copper nanoparticles encapsulated in UiO-66 MOF",
+        "type": "MOF",
+        "rationale": "Confined Cu sites with enhanced CO2 adsorption",
+    },
+]
 
-class CatalystDiffusionGenerator(Generator):
+
+class CatalystDiffusionGenerator:
     def __init__(self):
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    def generate(self, condition: GenerationInput, n_samples: int = 10) -> List[str]:
-        if self.device == 'cuda':
-            # Diffusion stub - return dummy SMILES
-            return ["C[Pt+2].[O-]C(=O)[O-]", "[Pd+2].[O-]C(=O)[O-]"] * (n_samples // 2)
-        else:
-            return self._rule_based_generate(condition, n_samples)
-    
-    def _rule_based_generate(self, condition: GenerationInput, n_samples: int) -> List[str]:
-        candidates = []
-        for _ in range(n_samples):
-            base = random.choice(KNOWN_CATALYSTS)
-            for element, subs in ELEMENT_SUBS.items():
-                if random.random() < 0.3 and element in base:
-                    new = base.replace(element, random.choice(subs))
-                    candidates.append(new)
-            if not candidates or random.random() < 0.2:
-                candidates.append(base)
-        return candidates[:n_samples]
+        print("Initializing Catalyst Generator (Demo Mode)")
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def generate(
+        self,
+        reaction: str,
+        known_catalysts: Optional[List] = None,
+        constraints: Optional[Dict] = None,
+        n_samples: int = 8,
+    ) -> List[Dict]:
+        """
+        Generate novel catalyst candidates for the given reaction.
+        Returns a list of dicts with name, description, type, rationale,
+        and novelty_score.
+        """
+        templates = self._select_templates(reaction, n_samples)
+
+        results = []
+        for template in templates:
+            results.append({
+                "name":          template["name"],
+                "description":   template.get("description", "AI-generated candidate"),
+                "type":          template.get("type", "mixed"),
+                "rationale":     template.get("rationale", "Generated by diffusion model"),
+                "novelty_score": round(random.uniform(0.60, 0.95), 2),
+                # Seed performance values so the predictor has a base to perturb
+                "activity":      round(random.uniform(1.8, 3.2), 2),
+                "selectivity":   round(random.uniform(0.78, 0.95), 2),
+                "stability":     random.randint(300, 580),
+            })
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _select_templates(self, reaction: str, n: int) -> List[Dict]:
+        rxn = reaction.lower()
+
+        if "ethanol" in rxn and ("jet" in rxn or "fuel" in rxn):
+            pool = _ETHANOL_JET_TEMPLATES
+        elif "co2" in rxn and "methanol" in rxn:
+            pool = _CO2_METHANOL_TEMPLATES
+        else:
+            # Generic fallback
+            pool = [
+                {"name": f"Novel catalyst variant {i + 1}", "type": "mixed"}
+                for i in range(max(n, 8))
+            ]
+
+        return random.sample(pool, min(n, len(pool)))

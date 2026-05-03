@@ -51,6 +51,12 @@ export default function RootLayout({
                     <Link href="/projects" className="px-3 py-2 rounded-md text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                       Projects
                     </Link>
+                    <Link href="/enzyme" className="px-3 py-2 rounded-md text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                      Enzyme
+                    </Link>
+                    <Link href="/pathways" className="px-3 py-2 rounded-md text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                      Pathways
+                    </Link>
                   </div>
                 </div>
               </div>

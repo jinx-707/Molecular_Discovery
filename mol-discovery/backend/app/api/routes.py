@@ -1,84 +1,172 @@
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any
-import uuid
-import asyncio
+"""
+API routes — all endpoints under /api prefix.
+"""
+import io
+import logging
+from typing import Optional
 
-from ...core.auth import require_auth
-from ...ml.catalyst_predictor import CatalystGNNPredictor
-from ...ml.catalyst_generator import CatalystDiffusionGenerator
-from ...simulation.energy import ReactionEnergyEstimator
-from ...services.discovery_service import DiscoveryService
+import pandas as pd
+from fastapi import APIRouter, Form, HTTPException, UploadFile, File
 
-router = APIRouter()
+from app.services.discovery_service import DiscoveryService
+from app.services.feedback_service import FeedbackService
+from app.data.ingestor import DataIngestor
+from app.schemas.validation import ReactionInput
 
-class ReactionParseInput(BaseModel):
-    natural_language: str
+log = logging.getLogger(__name__)
 
-class DiscoveryStartInput(BaseModel):
-    reaction: str
-    type: str = "catalyst"  # or "enzyme"
-    constraints: Dict[str, Any] = {}
+router = APIRouter(prefix="/api", tags=["discovery"])
 
-class ExperimentLogInput(BaseModel):
-    data: List[Dict[str, Any]]
+# ---------------------------------------------------------------------------
+# Lazy singletons — instantiated on first request so tests can set
+# DATABASE_URL before any DB session is created.
+# ---------------------------------------------------------------------------
+_discovery_service: Optional[DiscoveryService] = None
+_feedback_service:  Optional[FeedbackService]  = None
+_ingestor:          Optional[DataIngestor]      = None
 
-@router.post("/reaction/parse")
-async def parse_reaction(input: ReactionParseInput):
-    # Stub parser
-    return {"smiles": "C(=O)O.C[Mg]Br>>CC(=O)O[Mg]Br", "reactants": ["CO2"], "products": ["acetate"]}
+
+def _ds() -> DiscoveryService:
+    global _discovery_service
+    if _discovery_service is None:
+        _discovery_service = DiscoveryService()
+    return _discovery_service
+
+
+def _fs() -> FeedbackService:
+    global _feedback_service
+    if _feedback_service is None:
+        _feedback_service = FeedbackService()
+    return _feedback_service
+
+
+def _ing() -> DataIngestor:
+    global _ingestor
+    if _ingestor is None:
+        _ingestor = DataIngestor()
+    return _ingestor
+
+
+# ---------------------------------------------------------------------------
+# Discovery endpoints
+# ---------------------------------------------------------------------------
 
 @router.post("/discovery/start")
-async def start_discovery(input: DiscoveryStartInput, background_tasks: BackgroundTasks):
-    run_id = str(uuid.uuid4())
-    
-    async def run_discovery():
-        service = DiscoveryService(run_id)
-        await service.execute(input.reaction, input.type)
-    
-    background_tasks.add_task(run_discovery)
-    return {"run_id": run_id, "status": "queued"}
+async def start_discovery(body: ReactionInput):
+    """Start a new catalyst discovery run."""
+    try:
+        result = await _ds().run_discovery(
+            reaction=body.reaction,
+            constraints=body.constraints,
+            user_id=body.user_id,
+        )
+        return result
+    except Exception as exc:
+        log.error("start_discovery error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
-@router.get("/discovery/{run_id}/status")
-async def discovery_status(run_id: str):
-    # Stub
-    return {"status": "running", "progress": 0.6}
 
 @router.get("/discovery/{run_id}/results")
-async def discovery_results(run_id: str, page: int = 1):
-    # Stub results
-    return {
-        "candidates": [{"smiles": "TiO2", "score": 0.85, "viz_url": "/api/visualizations/molecule/1"} for _ in range(10)],
-        "total": 50
-    }
+async def get_results(run_id: str):
+    """Get results of a completed discovery run."""
+    result = _ds().get_results(run_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@router.get("/discovery/{run_id}/status")
+async def get_status(run_id: str):
+    """Check the status of a discovery run."""
+    from app.db.session import SessionLocal
+    from app.db.models import DiscoveryRun
+
+    db = SessionLocal()
+    try:
+        run = db.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {
+            "run_id":     run_id,
+            "status":     run.status,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Experiment logging
+# ---------------------------------------------------------------------------
 
 @router.post("/experiment/log")
-async def log_experiment(input: ExperimentLogInput):
-    print(f"Logged {len(input.data)} experiments")
-    return {"status": "logged", "retrain_triggered": len(input.data) > 5}
+async def log_experiment(
+    file:         Optional[UploadFile] = File(None),
+    candidate_id: Optional[str]   = Form(None),
+    activity:     Optional[float] = Form(None),
+    selectivity:  Optional[float] = Form(None),
+    stability:    Optional[int]   = Form(None),
+    temperature:  Optional[float] = Form(350.0),
+    pressure:     Optional[float] = Form(1.0),
+    researcher:   str             = Form("unknown"),
+):
+    """
+    Log experimental results.
+    Accepts either a CSV file upload or individual form fields.
+    """
+    if file:
+        contents = await file.read()
+        df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
+        count = _ing().ingest_csv_from_dataframe(df)
+        _fs().analyze_new_experiments()
+        return {"status": "success", "experiments_logged": count}
+
+    if candidate_id and activity is not None:
+        exp_data = {
+            "candidate_id": candidate_id,
+            "activity":     activity,
+            "selectivity":  selectivity,
+            "stability":    stability or 0,
+            "temperature":  temperature,
+            "pressure":     pressure,
+            "researcher":   researcher,
+        }
+        exp_id      = _ing().store_experiment(exp_data)
+        discrepancy = _fs().analyze_experiment(exp_id)
+        return {
+            "status":        "success",
+            "experiment_id": exp_id,
+            "discrepancy":   discrepancy,
+        }
+
+    raise HTTPException(
+        status_code=400,
+        detail="Provide either a CSV file or candidate_id + activity fields.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Model health & retraining
+# ---------------------------------------------------------------------------
 
 @router.get("/model/health")
 async def model_health():
-    return {"discrepancy": 0.12, "retrained": "2024-01-01"}
+    """Return model performance dashboard data."""
+    return _fs().get_model_health()
+
 
 @router.post("/model/retrain")
-async def retrain_model():
-    print("Retraining triggered")
-    return {"status": "queued"}
+async def trigger_retraining():
+    """Manually trigger model retraining."""
+    return _fs().retrain_models()
 
-@router.get("/visualizations/molecule/{candidate_id}")
-async def molecule_viz(candidate_id: str):
-    return {"pdb": "ATOM      1  O   MET A   1      25.785  24.313  23.870  1.00 20.00           O"}
 
-@router.get("/visualizations/energy/{candidate_id}/{reaction_id}")
-async def energy_diagram(candidate_id: str, reaction_id: str):
-    return {"diagram": {"Ea": 1.2, "dG": -0.8, "path": [0, 1.2, 0.7, -0.8]}}
+# ---------------------------------------------------------------------------
+# Catalyst search
+# ---------------------------------------------------------------------------
 
-@router.post("/project/create")
-async def create_project(name: str):
-    return {"project_id": "proj1"}
-
-@router.get("/project/{project_id}/feed")
-async def project_feed(project_id: str):
-    return [{"event": "New candidate TiO2 scored 0.85", "timestamp": "now"}]
-
+@router.get("/catalysts/search")
+async def search_catalysts(query: str, limit: int = 20):
+    """Search for known catalysts by reaction or name."""
+    results = _ing().fetch_known_catalysts(query, limit=limit)
+    return {"results": results, "count": len(results)}

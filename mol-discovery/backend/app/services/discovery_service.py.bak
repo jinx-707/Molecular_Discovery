@@ -1,0 +1,288 @@
+"""
+DiscoveryService — full DB-backed discovery workflow.
+Every candidate, prediction, and run is persisted to PostgreSQL.
+Falls back gracefully to SQLite in demo mode.
+"""
+import uuid
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import desc
+from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal
+from app.db.models import Catalyst, DiscoveryRun, Prediction
+from app.ml.catalyst_predictor import CatalystGNNPredictor
+from app.ml.catalyst_generator import CatalystDiffusionGenerator
+from app.data.ingestor import DataIngestor
+
+log = logging.getLogger(__name__)
+
+
+class DiscoveryService:
+    def __init__(self):
+        self.predictor = CatalystGNNPredictor()
+        self.generator = CatalystDiffusionGenerator()
+        self.ingestor  = DataIngestor()
+
+    # ------------------------------------------------------------------
+    # Main entry point — fresh DB session per request
+    # ------------------------------------------------------------------
+
+    async def run_discovery(
+        self,
+        reaction: str,
+        constraints: Optional[Dict] = None,
+        user_id: str = "system",
+    ) -> Dict[str, Any]:
+        """
+        Execute the complete discovery workflow with full DB persistence.
+        Returns ranked candidates with predicted performance metrics.
+        """
+        db = SessionLocal()
+        run_id = str(uuid.uuid4())
+
+        try:
+            # ── Create run record ──────────────────────────────────────
+            run = DiscoveryRun(
+                id=run_id,
+                user_id=user_id,
+                target_reaction=reaction,
+                constraints=constraints or {},
+                status="running",
+            )
+            db.add(run)
+            db.commit()
+
+            # ── Step 1: known catalysts from real DB ───────────────────
+            known_catalysts = self._get_known_from_db(db, reaction)
+
+            # ── Step 2: novel candidates (generator) ──────────────────
+            novel_catalysts = self.generator.generate(
+                reaction=reaction,
+                known_catalysts=[c["name"] for c in known_catalysts],
+                constraints=constraints,
+                n_samples=8,
+            )
+
+            # ── Step 3: persist novel candidates as Catalyst rows ──────
+            all_candidates: List[Dict] = list(known_catalysts)  # already have DB ids
+
+            for novel in novel_catalysts:
+                # Upsert by name so re-runs don't duplicate
+                existing = (
+                    db.query(Catalyst)
+                    .filter(Catalyst.name == novel["name"])
+                    .first()
+                )
+                if existing:
+                    cat_id = str(existing.id)
+                else:
+                    new_cat = Catalyst(
+                        id=str(uuid.uuid4()),
+                        name=novel["name"],
+                        composition={"type": novel.get("type", "generated")},
+                        catalyst_type=novel.get("type", "generated"),
+                        reaction_target=reaction,
+                        source="ai_generated",
+                    )
+                    db.add(new_cat)
+                    db.flush()
+                    cat_id = str(new_cat.id)
+
+                all_candidates.append({
+                    "id":          cat_id,
+                    "name":        novel["name"],
+                    "type":        "novel",
+                    "description": novel.get("description", ""),
+                    "rationale":   novel.get("rationale", ""),
+                    "activity":    novel.get("activity"),
+                    "selectivity": novel.get("selectivity"),
+                    "stability":   novel.get("stability"),
+                })
+
+            db.commit()
+
+            # ── Step 4: predict performance ────────────────────────────
+            predictions = self.predictor.predict(all_candidates)
+
+            # ── Step 5: rank + persist Prediction rows ─────────────────
+            ranked: List[Dict] = []
+            for i, candidate in enumerate(all_candidates):
+                pred = predictions[i] if i < len(predictions) else {}
+
+                activity    = float(pred.get("activity")    or 0.0)
+                selectivity = float(pred.get("selectivity") or 0.0)
+                stability   = int(pred.get("stability")     or 0)
+                uncertainty = float(pred.get("uncertainty") or 0.15)
+
+                score = self._score(activity, selectivity, stability, uncertainty)
+
+                # Persist prediction
+                db.add(Prediction(
+                    id=str(uuid.uuid4()),
+                    candidate_id=candidate["id"],
+                    model_version=self.predictor.model_version,
+                    predicted_activity=activity,
+                    predicted_selectivity=selectivity,
+                    predicted_stability=stability,
+                    uncertainty=uncertainty,
+                ))
+
+                ranked.append({
+                    "id":                    candidate["id"],
+                    "name":                  candidate["name"],
+                    "type":                  candidate.get("type", "known"),
+                    "predicted_activity":    activity,
+                    "predicted_selectivity": selectivity,
+                    "predicted_stability":   stability,
+                    "uncertainty":           uncertainty,
+                    "score":                 round(score, 3),
+                    "details":               candidate.get("description") or candidate.get("rationale", ""),
+                    "novelty_score":         candidate.get("novelty_score"),
+                    "catalyst_db_id":        candidate["id"],
+                })
+
+            ranked.sort(key=lambda x: x["score"], reverse=True)
+
+            # ── Update run ─────────────────────────────────────────────
+            run.status       = "completed"
+            run.known_count  = len(known_catalysts)
+            run.novel_count  = len(novel_catalysts)
+            run.completed_at = datetime.now()
+            db.commit()
+
+            return {
+                "run_id":           run_id,
+                "status":           "completed",
+                "total_candidates": len(ranked),
+                "known_count":      len(known_catalysts),
+                "novel_count":      len(novel_catalysts),
+                "candidates":       ranked[:20],
+            }
+
+        except Exception as exc:
+            db.rollback()
+            try:
+                run.status = "failed"
+                db.commit()
+            except Exception:
+                db.rollback()
+            log.error("Discovery pipeline failed: %s", exc)
+            raise
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # Results retrieval
+    # ------------------------------------------------------------------
+
+    def get_results(self, run_id: str) -> Dict[str, Any]:
+        """Retrieve a completed run's results from the DB."""
+        db = SessionLocal()
+        try:
+            run = db.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+            if not run:
+                return {"error": "Run not found"}
+
+            # Join Prediction → Catalyst for this reaction
+            rows = (
+                db.query(Prediction, Catalyst)
+                .join(Catalyst, Prediction.candidate_id == Catalyst.id, isouter=True)
+                .filter(Catalyst.reaction_target == run.target_reaction)
+                .order_by(desc(Prediction.predicted_activity))
+                .limit(20)
+                .all()
+            )
+
+            candidates = [
+                {
+                    "id":                    str(pred.id),
+                    "name":                  cat.name if cat else "Unknown",
+                    "type":                  cat.source if cat else "unknown",
+                    "predicted_activity":    pred.predicted_activity,
+                    "predicted_selectivity": pred.predicted_selectivity,
+                    "predicted_stability":   pred.predicted_stability,
+                    "uncertainty":           pred.uncertainty,
+                }
+                for pred, cat in rows
+            ]
+
+            return {
+                "run_id":           run.id,
+                "target_reaction":  run.target_reaction,
+                "status":           run.status,
+                "created_at":       run.created_at.isoformat() if run.created_at else None,
+                "completed_at":     run.completed_at.isoformat() if run.completed_at else None,
+                "total_candidates": (run.known_count or 0) + (run.novel_count or 0),
+                "known_count":      run.known_count or 0,
+                "novel_count":      run.novel_count or 0,
+                "candidates":       candidates,
+            }
+        except Exception as exc:
+            log.error("get_results failed: %s", exc)
+            return {"error": str(exc)}
+        finally:
+            db.close()
+
+    def get_run_status(self, run_id: str) -> Dict[str, Any]:
+        """Get status of a discovery run."""
+        db = SessionLocal()
+        try:
+            run = db.query(DiscoveryRun).filter(DiscoveryRun.id == run_id).first()
+            if not run:
+                return {"error": "Run not found"}
+            return {
+                "run_id":       run.id,
+                "status":       run.status,
+                "created_at":   run.created_at.isoformat() if run.created_at else None,
+                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            }
+        finally:
+            db.close()
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _get_known_from_db(self, db: Session, reaction: str) -> List[Dict]:
+        """
+        Pull real catalysts from the DB for this reaction.
+        Falls back to synthetic data via DataIngestor when DB is empty.
+        """
+        rows = (
+            db.query(Catalyst)
+            .filter(Catalyst.reaction_target.ilike(f"%{reaction[:40]}%"))
+            .filter(Catalyst.source != "ai_generated")   # exclude AI-generated from "known"
+            .order_by(desc(Catalyst.reported_activity))
+            .limit(20)
+            .all()
+        )
+
+        if rows:
+            return [
+                {
+                    "id":          str(r.id),
+                    "name":        r.name,
+                    "type":        "known",
+                    "composition": r.composition or {},
+                    "activity":    r.reported_activity,
+                    "selectivity": r.reported_selectivity,
+                    "stability":   r.reported_stability,
+                    "source":      r.source,
+                }
+                for r in rows
+            ]
+
+        # DB empty — use ingestor (synthetic fallback)
+        return self.ingestor.fetch_known_catalysts(reaction, limit=20)
+
+    @staticmethod
+    def _score(activity: float, selectivity: float, stability: int, uncertainty: float) -> float:
+        return (
+            0.40 * min(activity    / 3.5, 1.0) +
+            0.30 * selectivity +
+            0.20 * min(stability   / 600, 1.0) -
+            0.10 * uncertainty
+        )

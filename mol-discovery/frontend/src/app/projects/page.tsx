@@ -1,123 +1,129 @@
 'use client'
 
 import React, { useState } from 'react'
-import { Button } from '@/components/ui/button'
-import { project } from '@/services/api'
+import Link from 'next/link'
 
-export default function ProjectView() {
-  const [projects, setProjects] = useState<any[]>([])
-  const [newProjectName, setNewProjectName] = useState('')
-  const [selectedProject, setSelectedProject] = useState<any>(null)
-  const [feed, setFeed] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+interface Project {
+  id: string
+  name: string
+  reaction: string
+  created_at: string
+  run_count: number
+}
 
-  const handleCreateProject = async (e: React.FormEvent) => {
+export default function ProjectsPage() {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [name, setName]         = useState('')
+  const [reaction, setReaction] = useState('')
+
+  const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
-    try {
-      setError('')
-      setLoading(true)
-      const response = await project.create(newProjectName)
-      setProjects([...projects, response.data])
-      setNewProjectName('')
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to create project')
-    } finally {
-      setLoading(false)
+    if (!name.trim()) return
+    const proj: Project = {
+      id:         crypto.randomUUID(),
+      name:       name.trim(),
+      reaction:   reaction.trim(),
+      created_at: new Date().toISOString(),
+      run_count:  0,
     }
-  }
-
-  const handleSelectProject = async (proj: any) => {
-    try {
-      setSelectedProject(proj)
-      setError('')
-      const response = await project.feed(proj.id)
-      setFeed(response.data)
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to load project feed')
-    }
+    setProjects(p => [proj, ...p])
+    setName('')
+    setReaction('')
   }
 
   return (
-    <div className="container mx-auto py-12 px-4">
-      <h1 className="text-4xl font-bold mb-8">Projects</h1>
-      
-      {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          {error}
-        </div>
-      )}
+    <div className="max-w-5xl mx-auto py-10 px-4 space-y-8">
+      <div>
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Projects</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">
+          Organise discovery campaigns by project.
+        </p>
+      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-1">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 mb-6">
-            <h2 className="text-2xl font-bold mb-4">Create New Project</h2>
-            <form onSubmit={handleCreateProject} className="space-y-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Create form */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-md p-6">
+          <h2 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">New Project</h2>
+          <form onSubmit={handleCreate} className="space-y-3">
+            <div>
+              <label className="block text-sm font-semibold mb-1 text-gray-700 dark:text-gray-300">
+                Project Name
+              </label>
               <input
                 type="text"
-                className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700"
-                placeholder="Project name"
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
                 required
+                placeholder="e.g. Ethanol-to-Jet Q3"
+                className="w-full p-2.5 border border-gray-300 dark:border-gray-600 rounded-lg
+                           bg-white dark:bg-gray-700 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                value={name}
+                onChange={e => setName(e.target.value)}
               />
-              <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? 'Creating...' : 'Create Project'}
-              </Button>
-            </form>
-          </div>
-
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6">
-            <h2 className="text-2xl font-bold mb-4">Your Projects</h2>
-            {projects.length === 0 ? (
-              <p className="text-gray-500">No projects yet. Create one to get started!</p>
-            ) : (
-              <div className="space-y-2">
-                {projects.map((proj) => (
-                  <div
-                    key={proj.id}
-                    className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                      selectedProject?.id === proj.id
-                        ? 'bg-blue-100 dark:bg-blue-900'
-                        : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                    }`}
-                    onClick={() => handleSelectProject(proj)}
-                  >
-                    <p className="font-semibold">{proj.name}</p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {new Date(proj.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold mb-1 text-gray-700 dark:text-gray-300">
+                Target Reaction (optional)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. ethanol to jet fuel"
+                className="w-full p-2.5 border border-gray-300 dark:border-gray-600 rounded-lg
+                           bg-white dark:bg-gray-700 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                value={reaction}
+                onChange={e => setReaction(e.target.value)}
+              />
+            </div>
+            <button
+              type="submit"
+              className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white
+                         font-semibold text-sm transition-colors"
+            >
+              Create Project
+            </button>
+          </form>
         </div>
 
-        <div className="lg:col-span-2">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6">
-            <h2 className="text-2xl font-bold mb-4">
-              {selectedProject ? selectedProject.name : 'Select a project'}
-            </h2>
-            
-            {!selectedProject ? (
-              <p className="text-gray-500">Select a project from the list to view its activity feed</p>
-            ) : feed.length === 0 ? (
-              <p className="text-gray-500">No activity yet in this project</p>
-            ) : (
-              <div className="space-y-4">
-                {feed.map((item, idx) => (
-                  <div key={idx} className="border-l-4 border-blue-500 pl-4 py-2">
-                    <p className="font-semibold">{item.type}</p>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">{item.description}</p>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {new Date(item.timestamp).toLocaleString()}
-                    </p>
+        {/* Project list */}
+        <div className="lg:col-span-2 space-y-3">
+          {projects.length === 0 ? (
+            <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-md p-10 text-center text-gray-400">
+              <div className="text-4xl mb-3">📁</div>
+              <p>No projects yet. Create one to organise your discovery runs.</p>
+              <Link
+                href="/discovery"
+                className="mt-4 inline-block text-sm text-blue-600 dark:text-blue-400 hover:underline"
+              >
+                Or start a discovery run directly →
+              </Link>
+            </div>
+          ) : (
+            projects.map(proj => (
+              <div
+                key={proj.id}
+                className="bg-white dark:bg-gray-800 rounded-2xl shadow-md p-5
+                           flex items-center justify-between gap-4"
+              >
+                <div>
+                  <div className="font-semibold text-gray-900 dark:text-white">{proj.name}</div>
+                  {proj.reaction && (
+                    <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                      {proj.reaction}
+                    </div>
+                  )}
+                  <div className="text-xs text-gray-400 mt-1">
+                    Created {new Date(proj.created_at).toLocaleDateString()}
                   </div>
-                ))}
+                </div>
+                <Link
+                  href={`/discovery?reaction=${encodeURIComponent(proj.reaction || '')}`}
+                  className="flex-shrink-0 px-4 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/30
+                             text-blue-700 dark:text-blue-300 text-sm font-semibold hover:bg-blue-100
+                             dark:hover:bg-blue-900/50 transition-colors"
+                >
+                  Run Discovery
+                </Link>
               </div>
-            )}
-          </div>
+            ))
+          )}
         </div>
       </div>
     </div>

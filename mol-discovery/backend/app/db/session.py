@@ -1,28 +1,56 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from ..core.config import settings
+"""
+Sync SQLAlchemy session — uses psycopg2 driver.
+Falls back gracefully when Postgres is unavailable (SQLite for demo).
+"""
+import os
+import logging
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.DEBUG,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+
+load_dotenv()
+
+log = logging.getLogger(__name__)
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/moldiscovery",
 )
 
-AsyncSessionLocal = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+# ---------------------------------------------------------------------------
+# Try Postgres; fall back to SQLite so the app starts without a DB server
+# ---------------------------------------------------------------------------
+
+def _make_engine():
+    try:
+        engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args={})
+        # Quick connectivity check
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        log.info("Connected to PostgreSQL: %s", DATABASE_URL)
+        return engine
+    except Exception as exc:
+        log.warning("PostgreSQL unavailable (%s) — falling back to SQLite", exc)
+        sqlite_url = "sqlite:///./moldiscovery_demo.db"
+        return create_engine(sqlite_url, connect_args={"check_same_thread": False})
 
 
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+engine = _make_engine()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def get_db():
+    """FastAPI dependency — yields a DB session."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def init_db():
+    """Create all tables (idempotent)."""
+    from app.db.models import Base
+    Base.metadata.create_all(bind=engine)
+    log.info("Database tables created / verified.")
