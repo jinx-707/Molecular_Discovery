@@ -20,6 +20,7 @@ from app.api.enzyme import router as enzyme_router
 #from app.api.materials import router as materials_router
 from app.api.energy import router as energy_router
 from app.api.biology import router as biology_router
+from app.api.translate import router as translate_router
 from app.schemas.validation import ErrorResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -150,6 +151,7 @@ app.include_router(enzyme_router)
 #app.include_router(materials_router)
 app.include_router(energy_router)
 app.include_router(biology_router)
+app.include_router(translate_router)
 
 
 # ---------------------------------------------------------------------------

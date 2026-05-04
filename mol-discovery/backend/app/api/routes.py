@@ -6,12 +6,13 @@ import logging
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, Form, HTTPException, UploadFile, File
+from fastapi import APIRouter, Form, HTTPException, Query, UploadFile, File
 
 from app.services.discovery_service import DiscoveryService
 from app.services.feedback_service import FeedbackService
 from app.data.ingestor import DataIngestor
 from app.schemas.validation import ReactionInput
+from app.services.sarvam_service import translate_with_glossary
 
 log = logging.getLogger(__name__)
 
@@ -52,14 +53,24 @@ def _ing() -> DataIngestor:
 # ---------------------------------------------------------------------------
 
 @router.post("/discovery/start")
-async def start_discovery(body: ReactionInput):
-    """Start a new catalyst discovery run."""
+async def start_discovery(
+    body: ReactionInput,
+    lang: str = Query("en", description="Response language: 'en' or 'kn'"),
+):
+    """Start a new catalyst discovery run. Pass ?lang=kn for Kannada output."""
     try:
         result = await _ds().run_discovery(
             reaction=body.reaction,
             constraints=body.constraints,
             user_id=body.user_id,
         )
+        # Translate dynamic candidate fields when Kannada is requested
+        if lang == "kn" and isinstance(result, dict) and "candidates" in result:
+            for c in result["candidates"]:
+                if c.get("name"):
+                    c["name_kn"] = translate_with_glossary(c["name"])
+                if c.get("details"):
+                    c["details_kn"] = translate_with_glossary(c["details"])
         return result
     except Exception as exc:
         log.error("start_discovery error: %s", exc)
